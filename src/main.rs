@@ -65,6 +65,7 @@ fn main() {
                     let is_fullscreen = state.window.fullscreen().is_some();
                     if is_fullscreen {
                         state.window.set_fullscreen(None);
+                        state.window.set_cursor_visible(true)
                     } else {
                         state.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                         state.window.set_cursor_visible(false)
