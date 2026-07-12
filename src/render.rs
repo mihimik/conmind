@@ -1,3 +1,4 @@
+use std::fs;
 use crate::render_context::RenderContext;
 use crate::audio::AudioData;
 
@@ -5,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use winit::dpi::PhysicalSize;
-use crate::audio;
+use crate::{audio, Config};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -43,6 +44,7 @@ pub struct State {
 
     pub smooth_audio_data: AudioUniform,
     pub total_time: f32,
+    pub sensitivity: f32,
 
     pub max_high: f32,
 
@@ -76,7 +78,7 @@ impl State {
 
         let size = window.inner_size();
 
-        let (audio_data, audio_stream) = audio::setup_audio();
+        let (audio_data, audio_stream, sensitivity) = audio::setup_audio().expect("Failed to initialize audio");
 
         Self {
             render_ctx,
@@ -89,6 +91,7 @@ impl State {
             smooth_audio_data: AudioUniform::new(),
             max_high: 0.01,
             pipeline,
+            sensitivity,
             total_time: 0.0,
         }
     }
@@ -177,7 +180,7 @@ impl State {
         data.time = self.total_time;
 
         let aggression = (audio_shared.high + audio_shared.mid ) * audio_shared.bass;
-        data.volume = aggression;
+        data.volume = aggression * self.sensitivity;
 
         self.render_ctx.queue.write_buffer(&self.audio_buffer, 0, bytemuck::cast_slice(&[data]));
     }
@@ -270,7 +273,10 @@ fn create_render_pipeline(
 ) -> Option<wgpu::RenderPipeline> {
     let error_guard = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-    let shader = device.create_shader_module(shader);
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("presets/glitch_barocco.wgsl").into()),
+    });
     let error = pollster::block_on(error_guard.pop());
 
     if let Some(e) = error {

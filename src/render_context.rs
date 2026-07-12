@@ -73,7 +73,7 @@ impl<'a> RenderContext {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::AutoNoVsync,
+            present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
