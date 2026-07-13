@@ -55,7 +55,8 @@ fn get_ascii_mask(luma: f32, char_uv: vec2<f32>) -> f32 {
     } else if (luma > 0.3) {
         mask = step(0.35, abs(char_uv.x - 0.5)) + step(0.35, abs(char_uv.y - 0.5));
     } else if (luma > 0.1) {
-        mask = step(length(char_uv - 0.5), 0.15);
+        let glyph_uv = char_uv - 0.5;
+        mask = step(dot(glyph_uv, glyph_uv), 0.0225);
     }
     return mask;
 }
@@ -114,7 +115,8 @@ fn get_scene(uv_screen: vec2<f32>, audio: Audio, window_size: WindowSize) -> vec
     let glow = (0.01 + audio.mid * 0.03) / (abs(r - 0.3 - flower) + 0.002);
 
     var color = vec3<f32>(1.0, 0.1, 0.05) * glow;
-    color = mix(color, vec3<f32>(1.0, 0.4, 0.1) * glow * 1.5, pow(audio.bass, 3.0));
+    let bass_squared = audio.bass * audio.bass;
+    color = mix(color, vec3<f32>(1.0, 0.4, 0.1) * glow * 1.5, bass_squared * audio.bass);
 
     let char_uv = fract(uv_screen * vec2<f32>(window_size.width / 10.0, window_size.height / 16.0));
     let mask = get_ascii_mask(dot(color, vec3<f32>(0.299, 0.587, 0.114)), char_uv);
@@ -128,7 +130,9 @@ fn get_scene(uv_screen: vec2<f32>, audio: Audio, window_size: WindowSize) -> vec
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let pulse = pow(smoothstep(0.75, 0.95, audio.bass), 4.0);
+    let pulse_base = smoothstep(0.75, 0.95, audio.bass);
+    let pulse_squared = pulse_base * pulse_base;
+    let pulse = pulse_squared * pulse_squared;
     let shift = pulse * 0.04;
 
     let r_c = get_scene(in.uv + vec2<f32>(shift, 0.0), audio, window_size).r;
@@ -142,11 +146,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     final_output += final_output * pulse * 1.5;
 
-    let scan_noise = fract(sin(in.uv.y * 1234.56 + audio.time) * 43758.5453);
-
-    if (pulse > 0.4 && scan_noise > 0.7) {
-        let tear = sin(in.uv.y * 50.0 + audio.time * 10.0) * 0.1 * pulse;
-        final_output = get_scene(in.uv + vec2<f32>(tear, 0.0), audio, window_size) + lasers;
+    if (pulse > 0.4) {
+        let scan_noise = fract(sin(in.uv.y * 1234.56 + audio.time) * 43758.5453);
+        if (scan_noise > 0.7) {
+            let tear = sin(in.uv.y * 50.0 + audio.time * 10.0) * 0.1 * pulse;
+            final_output = get_scene(in.uv + vec2<f32>(tear, 0.0), audio, window_size) + lasers;
+        }
     }
 
     final_output = clamp(final_output, vec3<f32>(0.0), vec3<f32>(1.2));
