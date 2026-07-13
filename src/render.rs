@@ -38,6 +38,8 @@ pub struct State {
     pub size: PhysicalSize<u32>,
 
     pub audio_buffer: wgpu::Buffer,
+    audio_uniform: AudioUniform,
+    staging_belt: wgpu::util::StagingBelt,
     pub audio_bind_group: wgpu::BindGroup,
     pub audio_data: Arc<Mutex<AudioData>>,
     pub audio_stream: cpal::Stream,
@@ -56,7 +58,8 @@ impl State {
         let window = Arc::new(window);
         let render_ctx = RenderContext::new(Arc::clone(&window)).await;
 
-        let (audio_buffer, audio_bind_group_layout, audio_bind_group) = init_audio(render_ctx.device.clone(), render_ctx.window_size_buffer.clone());
+        let audio_uniform = AudioUniform::new();
+        let (audio_buffer, audio_bind_group_layout, audio_bind_group) = init_audio(render_ctx.device.clone(), render_ctx.window_size_buffer.clone(), &audio_uniform);
 
         let render_pipeline_layout = render_ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Main Layout"),
@@ -79,12 +82,15 @@ impl State {
         let size = window.inner_size();
 
         let (audio_data, audio_stream, sensitivity) = audio::setup_audio().expect("Failed to initialize audio");
+        let staging_belt = wgpu::util::StagingBelt::new(render_ctx.device.clone(), 64);
 
         Self {
             render_ctx,
             window,
             size,
             audio_buffer,
+            audio_uniform,
+            staging_belt,
             audio_bind_group,
             audio_data,
             audio_stream,
@@ -107,6 +113,12 @@ impl State {
                 let mut encoder = self.render_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Render Encoder"),
                 });
+                let uniform_size = wgpu::BufferSize::new(std::mem::size_of::<AudioUniform>() as u64)
+                    .expect("audio uniform is non-empty");
+                self.staging_belt
+                    .write_buffer(&mut encoder, &self.audio_buffer, 0, uniform_size)
+                    .copy_from_slice(bytemuck::bytes_of(&self.audio_uniform));
+                self.staging_belt.finish();
 
                 {
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -136,6 +148,8 @@ impl State {
                 }
 
                 self.render_ctx.queue.submit(std::iter::once(encoder.finish()));
+                self.staging_belt.recall();
+                let _ = self.render_ctx.device.poll(wgpu::PollType::Poll);
 
                 surface_texture.present();
             }
@@ -182,7 +196,7 @@ impl State {
         let aggression = (audio_shared.high + audio_shared.mid ) * audio_shared.bass;
         data.volume = aggression * self.sensitivity;
 
-        self.render_ctx.queue.write_buffer(&self.audio_buffer, 0, bytemuck::cast_slice(&[data]));
+        self.audio_uniform = data;
     }
 
 
@@ -192,9 +206,7 @@ impl State {
     }
 }
 
-fn init_audio(device: wgpu::Device, window_size_buffer: wgpu::Buffer) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
-    let audio_uniform = AudioUniform::new();
-
+fn init_audio(device: wgpu::Device, window_size_buffer: wgpu::Buffer, audio_uniform: &AudioUniform) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
     let spectrum_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Spectrum Buffer"),
         size: (512 * 4) as u64,
@@ -204,7 +216,7 @@ fn init_audio(device: wgpu::Device, window_size_buffer: wgpu::Buffer) -> (wgpu::
 
     let audio_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Audio Buffer"),
-        contents: bytemuck::cast_slice(&[audio_uniform]),
+        contents: bytemuck::bytes_of(audio_uniform),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
