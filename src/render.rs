@@ -39,7 +39,6 @@ pub struct State {
 
     pub audio_buffer: wgpu::Buffer,
     audio_uniform: AudioUniform,
-    staging_belt: wgpu::util::StagingBelt,
     pub audio_bind_group: wgpu::BindGroup,
     pub audio_data: Arc<Mutex<AudioData>>,
     pub audio_stream: cpal::Stream,
@@ -96,15 +95,12 @@ impl State {
         let size = window.inner_size();
 
         let (audio_data, audio_stream, sensitivity) = audio::setup_audio().expect("Failed to initialize audio");
-        let staging_belt = wgpu::util::StagingBelt::new(render_ctx.device.clone(), 64);
-
         Self {
             render_ctx,
             window,
             size,
             audio_buffer,
             audio_uniform,
-            staging_belt,
             audio_bind_group,
             audio_data,
             audio_stream,
@@ -130,10 +126,11 @@ impl State {
                 });
                 let uniform_size = wgpu::BufferSize::new(std::mem::size_of::<AudioUniform>() as u64)
                     .expect("audio uniform is non-empty");
-                self.staging_belt
+                self.render_ctx
+                    .staging_belt
                     .write_buffer(&mut encoder, &self.audio_buffer, 0, uniform_size)
                     .copy_from_slice(bytemuck::bytes_of(&self.audio_uniform));
-                self.staging_belt.finish();
+                self.render_ctx.staging_belt.finish();
 
                 {
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -168,7 +165,7 @@ impl State {
                 }
 
                 self.render_ctx.queue.submit(std::iter::once(encoder.finish()));
-                self.staging_belt.recall();
+                self.render_ctx.staging_belt.recall();
                 let _ = self.render_ctx.device.poll(wgpu::PollType::Poll);
 
                 surface_texture.present();
@@ -306,10 +303,7 @@ fn create_render_pipeline(
 ) -> Option<wgpu::RenderPipeline> {
     let error_guard = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("presets/glitch_barocco.wgsl").into()),
-    });
+    let shader = device.create_shader_module(shader);
     let error = pollster::block_on(error_guard.pop());
 
     if let Some(e) = error {
