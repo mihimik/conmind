@@ -51,6 +51,7 @@ pub struct State {
     pub max_high: f32,
 
     pub pipeline: Option<wgpu::RenderPipeline>,
+    pub quiet_pipeline: Option<wgpu::RenderPipeline>,
 }
 
 impl State {
@@ -77,6 +78,19 @@ impl State {
             wgpu::PrimitiveTopology::TriangleList,
             wgpu::include_wgsl!("presets/glitch_barocco.wgsl"),
             wgpu::PolygonMode::Fill,
+            3.0,
+        );
+        let quiet_pipeline = create_render_pipeline(
+            Some("Quiet Main Pipeline"),
+            &render_ctx.device,
+            &render_pipeline_layout,
+            render_ctx.config.format,
+            None,
+            &[],
+            wgpu::PrimitiveTopology::TriangleList,
+            wgpu::include_wgsl!("presets/glitch_barocco.wgsl"),
+            wgpu::PolygonMode::Fill,
+            1.0,
         );
 
         let size = window.inner_size();
@@ -97,6 +111,7 @@ impl State {
             smooth_audio_data: AudioUniform::new(),
             max_high: 0.01,
             pipeline,
+            quiet_pipeline,
             sensitivity,
             total_time: 0.0,
         }
@@ -140,7 +155,12 @@ impl State {
 
                     render_pass.set_viewport(0.0, 0.0, self.size.width as f32, self.size.height as f32, 0.0, 1.0);
 
-                    if let Some(ref p) = self.pipeline {
+                    let pipeline = if self.smooth_audio_data.bass <= 0.75 {
+                        self.quiet_pipeline.as_ref().or(self.pipeline.as_ref())
+                    } else {
+                        self.pipeline.as_ref()
+                    };
+                    if let Some(p) = pipeline {
                         render_pass.set_pipeline(p);
                         render_pass.set_bind_group(0, &self.audio_bind_group, &[]);
                         render_pass.draw(0..3, 0..1);
@@ -282,6 +302,7 @@ fn create_render_pipeline(
     topology: wgpu::PrimitiveTopology,
     shader: wgpu::ShaderModuleDescriptor,
     polygon_mode: wgpu::PolygonMode,
+    scene_samples: f64,
 ) -> Option<wgpu::RenderPipeline> {
     let error_guard = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -324,7 +345,10 @@ fn create_render_pipeline(
                     }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("scene_samples", scene_samples)],
+                    ..Default::default()
+                },
             }),
             primitive: wgpu::PrimitiveState {
                 topology,

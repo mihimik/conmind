@@ -36,6 +36,8 @@ struct WindowSize {
 @group(0) @binding(2)
 var<uniform> window_size: WindowSize;
 
+override scene_samples: u32 = 3u;
+
 
 fn get_fractal_layer(uv: vec2<f32>, t: f32) -> vec2<f32> {
     var p = uv;
@@ -136,11 +138,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let pulse = pulse_squared * pulse_squared;
     let shift = pulse * 0.04;
 
-    let r_c = get_scene(in.uv + vec2<f32>(shift, 0.0), audio, window_size).r;
-    let g_c = get_scene(in.uv, audio, window_size).g;
-    let b_c = get_scene(in.uv - vec2<f32>(shift, 0.0), audio, window_size).b;
-
-    var final_output = vec3<f32>(r_c, g_c, b_c);
+    var final_output: vec3<f32>;
+    if (scene_samples <= 1u) {
+        final_output = get_scene(in.uv, audio, window_size);
+    } else {
+        let r_c = get_scene(in.uv + vec2<f32>(shift, 0.0), audio, window_size).r;
+        let g_c = get_scene(in.uv, audio, window_size).g;
+        let b_c = get_scene(in.uv - vec2<f32>(shift, 0.0), audio, window_size).b;
+        final_output = vec3<f32>(r_c, g_c, b_c);
+    }
     let lasers = get_lasers(in.uv, audio.time, audio.high);
 
     final_output += lasers;
