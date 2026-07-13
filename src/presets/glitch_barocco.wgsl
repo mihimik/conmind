@@ -120,7 +120,8 @@ fn get_scene(uv_screen: vec2<f32>, audio: Audio, window_size: WindowSize) -> vec
 
     let char_uv = fract(uv_screen * vec2<f32>(window_size.width / 10.0, window_size.height / 16.0));
     let mask = get_ascii_mask(dot(color, vec3<f32>(0.299, 0.587, 0.114)), char_uv);
-    let vignette = smoothstep(1.3, 0.3, length(uv_raw));
+    let radius_squared = dot(uv_raw, uv_raw);
+    let vignette = smoothstep(1.69, 0.09, radius_squared);
 
     return color * mask * vignette;
 }
