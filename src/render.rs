@@ -38,6 +38,7 @@ pub struct State {
     pub size: PhysicalSize<u32>,
 
     pub audio_buffer: wgpu::Buffer,
+    audio_uniform: AudioUniform,
     pub audio_bind_group: wgpu::BindGroup,
     pub audio_data: Arc<Mutex<AudioData>>,
     pub audio_stream: cpal::Stream,
@@ -49,6 +50,7 @@ pub struct State {
     pub max_high: f32,
 
     pub pipeline: Option<wgpu::RenderPipeline>,
+    pub quiet_pipeline: Option<wgpu::RenderPipeline>,
 }
 
 impl State {
@@ -56,7 +58,8 @@ impl State {
         let window = Arc::new(window);
         let render_ctx = RenderContext::new(Arc::clone(&window)).await;
 
-        let (audio_buffer, audio_bind_group_layout, audio_bind_group) = init_audio(render_ctx.device.clone(), render_ctx.window_size_buffer.clone());
+        let audio_uniform = AudioUniform::new();
+        let (audio_buffer, audio_bind_group_layout, audio_bind_group) = init_audio(render_ctx.device.clone(), render_ctx.window_size_buffer.clone(), &audio_uniform);
 
         let render_pipeline_layout = render_ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Main Layout"),
@@ -74,23 +77,37 @@ impl State {
             wgpu::PrimitiveTopology::TriangleList,
             wgpu::include_wgsl!("presets/glitch_barocco.wgsl"),
             wgpu::PolygonMode::Fill,
+            3.0,
+        );
+        let quiet_pipeline = create_render_pipeline(
+            Some("Quiet Main Pipeline"),
+            &render_ctx.device,
+            &render_pipeline_layout,
+            render_ctx.config.format,
+            None,
+            &[],
+            wgpu::PrimitiveTopology::TriangleList,
+            wgpu::include_wgsl!("presets/glitch_barocco.wgsl"),
+            wgpu::PolygonMode::Fill,
+            1.0,
         );
 
         let size = window.inner_size();
 
         let (audio_data, audio_stream, sensitivity) = audio::setup_audio().expect("Failed to initialize audio");
-
         Self {
             render_ctx,
             window,
             size,
             audio_buffer,
+            audio_uniform,
             audio_bind_group,
             audio_data,
             audio_stream,
             smooth_audio_data: AudioUniform::new(),
             max_high: 0.01,
             pipeline,
+            quiet_pipeline,
             sensitivity,
             total_time: 0.0,
         }
@@ -107,6 +124,13 @@ impl State {
                 let mut encoder = self.render_ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Render Encoder"),
                 });
+                let uniform_size = wgpu::BufferSize::new(std::mem::size_of::<AudioUniform>() as u64)
+                    .expect("audio uniform is non-empty");
+                self.render_ctx
+                    .staging_belt
+                    .write_buffer(&mut encoder, &self.audio_buffer, 0, uniform_size)
+                    .copy_from_slice(bytemuck::bytes_of(&self.audio_uniform));
+                self.render_ctx.staging_belt.finish();
 
                 {
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -128,7 +152,12 @@ impl State {
 
                     render_pass.set_viewport(0.0, 0.0, self.size.width as f32, self.size.height as f32, 0.0, 1.0);
 
-                    if let Some(ref p) = self.pipeline {
+                    let pipeline = if self.smooth_audio_data.bass <= 0.75 {
+                        self.quiet_pipeline.as_ref().or(self.pipeline.as_ref())
+                    } else {
+                        self.pipeline.as_ref()
+                    };
+                    if let Some(p) = pipeline {
                         render_pass.set_pipeline(p);
                         render_pass.set_bind_group(0, &self.audio_bind_group, &[]);
                         render_pass.draw(0..3, 0..1);
@@ -136,6 +165,8 @@ impl State {
                 }
 
                 self.render_ctx.queue.submit(std::iter::once(encoder.finish()));
+                self.render_ctx.staging_belt.recall();
+                let _ = self.render_ctx.device.poll(wgpu::PollType::Poll);
 
                 surface_texture.present();
             }
@@ -182,7 +213,7 @@ impl State {
         let aggression = (audio_shared.high + audio_shared.mid ) * audio_shared.bass;
         data.volume = aggression * self.sensitivity;
 
-        self.render_ctx.queue.write_buffer(&self.audio_buffer, 0, bytemuck::cast_slice(&[data]));
+        self.audio_uniform = data;
     }
 
 
@@ -192,9 +223,7 @@ impl State {
     }
 }
 
-fn init_audio(device: wgpu::Device, window_size_buffer: wgpu::Buffer) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
-    let audio_uniform = AudioUniform::new();
-
+fn init_audio(device: wgpu::Device, window_size_buffer: wgpu::Buffer, audio_uniform: &AudioUniform) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
     let spectrum_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Spectrum Buffer"),
         size: (512 * 4) as u64,
@@ -204,7 +233,7 @@ fn init_audio(device: wgpu::Device, window_size_buffer: wgpu::Buffer) -> (wgpu::
 
     let audio_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Audio Buffer"),
-        contents: bytemuck::cast_slice(&[audio_uniform]),
+        contents: bytemuck::bytes_of(audio_uniform),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
@@ -270,13 +299,11 @@ fn create_render_pipeline(
     topology: wgpu::PrimitiveTopology,
     shader: wgpu::ShaderModuleDescriptor,
     polygon_mode: wgpu::PolygonMode,
+    scene_samples: f64,
 ) -> Option<wgpu::RenderPipeline> {
     let error_guard = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("presets/glitch_barocco.wgsl").into()),
-    });
+    let shader = device.create_shader_module(shader);
     let error = pollster::block_on(error_guard.pop());
 
     if let Some(e) = error {
@@ -312,7 +339,10 @@ fn create_render_pipeline(
                     }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("scene_samples", scene_samples)],
+                    ..Default::default()
+                },
             }),
             primitive: wgpu::PrimitiveState {
                 topology,
